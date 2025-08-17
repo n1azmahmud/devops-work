@@ -1,0 +1,43 @@
+# Using pre-built image as the base
+FROM registry.portal.com:5000/php-portal:latest2
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy application files 
+COPY . /var/www/html
+
+# Clean default config 
+RUN mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+# Copy custom default nginx config
+COPY pipeline/default /etc/nginx/sites-available/default
+
+# Remove existing default symlink/file before creating new one
+RUN rm -f /etc/nginx/sites-enabled/default && \
+    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+
+# Set permissions
+RUN chown -R www-data:www-data /var/www/html && \
+    chmod -R 777 /var/www/html/storage /var/www/html/bootstrap/ /var/www/html/resources && \
+    chmod -R 777 /var/www/html/app/ /var/www/html/public/ /var/www/html/routes/
+
+# Laravel artisan commands
+RUN composer install --no-dev --no-interaction --prefer-dist && \
+    php artisan config:clear && \
+    php artisan route:clear && \
+    php artisan view:clear && \
+    php artisan view:cache
+
+# Add Bangla font for mPDF
+COPY banglafont/Nikosh.ttf /var/www/html/vendor/mpdf/mpdf/ttfonts
+COPY banglafont/FontVariables.php /var/www/html/vendor/mpdf/mpdf/src/Config
+
+# Supervisor config
+COPY pipeline/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Expose port
+EXPOSE 82
+
+# Start Supervisor (manages PHP-FPM and Nginx)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
