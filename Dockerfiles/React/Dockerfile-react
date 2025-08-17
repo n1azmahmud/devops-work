@@ -1,0 +1,35 @@
+# Stage 1: Build the React project
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy source code
+COPY . .
+
+# Inject .env only for build
+COPY .env .env
+
+# Build project (React default: /app/build, Vite default: /app/dist)
+RUN npm run build
+
+# Remove .env after build
+RUN rm -f .env
+
+# Stage 2: Serve with Nginx
+FROM nginx:alpine
+
+# Copy custom Nginx config
+COPY pipeline/nginx-conf /etc/nginx/conf.d/app.conf
+
+# Copy built frontend
+COPY --from=builder /app/build /usr/share/nginx/html/top-management/
+
+# Expose port 80 (default)
+EXPOSE 80
+
+# Start Nginx
+CMD ["nginx", "-g", "daemon off;"]
