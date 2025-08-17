@@ -1,0 +1,22 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: portal
+  namespace: app-1
+  labels:
+    app: portal
+spec:
+  ports:
+    - protocol: TCP
+      port: 84
+      targetPort: 8080
+      nodePort: 30080
+  selector:
+    app: portal
+  type: NodePort
+  sessionAffinity: None
+  externalTrafficPolicy: Cluster
+  ipFamilies:
+    - IPv4
+  ipFamilyPolicy: SingleStack
+  internalTrafficPolicy: Cluster
