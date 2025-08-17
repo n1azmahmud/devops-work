@@ -1,0 +1,30 @@
+# Build stage
+FROM maven:3.9.8-eclipse-temurin-21 AS build
+
+# Set the working directory for the Maven build
+WORKDIR /usr/src/app
+
+# Copy the entire project directory to the Docker container
+COPY . .
+
+# Run the Maven build command with the provided settings.xml
+RUN mvn clean install -DskipTests -U
+
+# Runtime stage
+FROM openjdk:21-thin
+
+# Set the working directory for the application
+WORKDIR /usr/src/app
+
+# Set timezone by symlink (if /usr/share/zoneinfo exists)
+RUN ln -sf /usr/share/zoneinfo/Asia/Dhaka /etc/localtime && \
+    echo "Asia/Dhaka" > /etc/timezone || true
+
+# Copy the built JAR files from the build stage to the runtime image
+COPY --from=build /usr/src/app/target/*.jar /usr/src/app/portal.jar
+
+# Expose the port the application will run on (8080)
+EXPOSE 8080
+
+# Start the service (or directly run the app)
+CMD ["java", "-jar", "/usr/src/app/portal.jar"]
