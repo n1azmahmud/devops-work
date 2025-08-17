@@ -1,0 +1,99 @@
+# Use a Debian-based PHP-FPM image
+FROM php:8.2-fpm-bullseye
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libaio1 \
+    libnsl2 \
+    libnsl-dev \
+    unzip \
+    libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    libzip-dev \
+    nginx \
+    git \
+    curl \
+    build-essential \
+    autoconf \
+    supervisor \
+    libstdc++6 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Configure and install PHP extensions
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg && \
+    docker-php-ext-install pdo pdo_mysql gd bcmath zip
+
+# Add Oracle Instant Client zips
+# Ensure these zip files are in the same directory as your Dockerfile
+ADD instantclient-basic-linux.x64-12.2.0.1.0.zip /tmp/
+ADD instantclient-sdk-linux.x64-12.2.0.1.0.zip /tmp/
+
+# Install Oracle Instant Client
+RUN mkdir -p /opt/oracle && \
+    unzip /tmp/instantclient-basic-linux.x64-12.2.0.1.0.zip -d /opt/oracle && \
+    unzip /tmp/instantclient-sdk-linux.x64-12.2.0.1.0.zip -d /opt/oracle && \
+    rm -rf /tmp/instantclient-*.zip && \
+    mv /opt/oracle/instantclient_12_2 /opt/oracle/instantclient && \
+    ln -s /opt/oracle/instantclient/libclntsh.so.12.1 /opt/oracle/instantclient/libclntsh.so && \
+    ln -s /opt/oracle/instantclient/libocci.so.12.1 /opt/oracle/instantclient/libocci.so && \
+    # On Debian, /etc/ld.so.conf.d usually exists. Use /etc/ld.so.conf.d
+    echo "/opt/oracle/instantclient" > /etc/ld.so.conf.d/oracle-instantclient.conf && \
+    ldconfig # Update dynamic linker cache
+
+# Set Oracle library path
+ENV LD_LIBRARY_PATH="/opt/oracle/instantclient:${LD_LIBRARY_PATH}"
+
+# Install OCI8 extension
+RUN pecl channel-update pecl.php.net && \
+    echo 'instantclient,/opt/oracle/instantclient' | pecl install oci8-3.0.1 && \
+    docker-php-ext-enable oci8
+
+# Install Composer
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Set timezone
+RUN ln -snf /usr/share/zoneinfo/Asia/Dhaka /etc/localtime && echo "Asia/Dhaka" > /etc/timezone
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy application files (Copy them before running composer install)
+COPY . /var/www/html
+
+# Clean default config
+RUN mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+
+# Copy custom default nginx config
+COPY pipeline/default /etc/nginx/sites-available/default
+
+# Link it to sites-enabled
+# Add a command to remove existing default symlink/file before creating yours
+RUN rm -f /etc/nginx/sites-enabled/default && \
+    ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+
+# Set permissions
+RUN chown -R www-data:www-data /var/www/html && \
+    chmod -R 777 /var/www/html/storage /var/www/html/bootstrap/ /var/www/html/resources && \
+    chmod -R 777 /var/www/html/app/ /var/www/html/public/ /var/www/html/routes/
+
+RUN git config --global --add safe.directory /var/www/html
+
+# Laravel artisan commands
+RUN composer install --no-dev --no-interaction --prefer-dist && \
+    php artisan config:clear && \
+    php artisan route:clear && \
+    php artisan view:clear && \
+    php artisan view:cache
+
+# Add Bangla font for mPDF
+COPY banglafont/Nikosh.ttf /var/www/html/vendor/mpdf/mpdf/ttfonts
+COPY banglafont/FontVariables.php /var/www/html/vendor/mpdf/mpdf/src/Config
+
+# Supervisor config
+COPY pipeline/supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Expose port
+EXPOSE 82
+
+# Start Supervisor (manages PHP-FPM and Nginx)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
