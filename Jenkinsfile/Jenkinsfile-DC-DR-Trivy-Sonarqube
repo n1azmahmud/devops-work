@@ -1,0 +1,116 @@
+pipeline {
+    agent {
+        node {
+            label 'registry'
+        }
+    }
+
+    environment {
+        DOCKER_TAG     = getDockerTag()
+        REGISTRY_DOMAIN = "registry.project.com:5000"
+        REPOSITORY      = "portal"
+        DC_IP           = "10.200.1.1"
+        DR_IP           = "10.200.1.2"
+        SONAR_HOST      = "http://10.200.1.1:9000"
+    }
+
+    stages {
+        stage('Prepare Configuration') {
+            steps {
+                sh "mv src/main/resources/application-jenkins.yml src/main/resources/application.yml"
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                sh """
+                    echo "Building image: $REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG}"
+                    docker build -f pipeline/Dockerfile . \
+                        -t $REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG}
+                """
+            }
+        }
+
+        stage('Push to DC Registry') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry',
+                                                 usernameVariable: 'REGISTRY_USER',
+                                                 passwordVariable: 'REGISTRY_PASS')]) {
+                    sh """
+                        docker tag $REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG} ${DC_IP}:5000/$REPOSITORY:${DOCKER_TAG}
+                        docker login ${DC_IP}:5000 -u "$REGISTRY_USER" --password-stdin <<< "$REGISTRY_PASS"
+                        docker push ${DC_IP}:5000/$REPOSITORY:${DOCKER_TAG}
+                        docker rmi ${DC_IP}:5000/$REPOSITORY:${DOCKER_TAG} || true
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to UAT Instance Kubernetes') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfigfile_uat',
+                                      variable: 'KUBECONFIG_FILE')]) {
+                    sh """
+                        export KUBECONFIG=$KUBECONFIG_FILE
+                        kubectl --namespace=project set image deployment/fsmms-portal \
+                            fsmms-portal=$REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG}
+                    """
+                }
+            }
+        }
+
+        stage('Push to DR Registry') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-registry',
+                                                 usernameVariable: 'REGISTRY_USER',
+                                                 passwordVariable: 'REGISTRY_PASS')]) {
+                    sh """
+                        docker tag $REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG} ${DR_IP}:5000/$REPOSITORY:${DOCKER_TAG}
+                        docker login ${DR_IP}:5000 -u "$REGISTRY_USER" --password-stdin <<< "$REGISTRY_PASS"
+                        docker push ${DR_IP}:5000/$REPOSITORY:${DOCKER_TAG}
+                        docker rmi ${DR_IP}:5000/$REPOSITORY:${DOCKER_TAG} || true
+                    """
+                }
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh """
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy:latest image \
+                        --exit-code 0 --severity HIGH,CRITICAL --format table --ignore-unfixed \
+                        $REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG}
+
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+                        aquasec/trivy:latest image \
+                        --exit-code 0 --severity CRITICAL --format table --ignore-unfixed \
+                        $REGISTRY_DOMAIN/$REPOSITORY:${DOCKER_TAG}
+                """
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarserver') {
+                    withCredentials([string(credentialsId: 'sonarqube-admin',
+                                            variable: 'SONAR_TOKEN')]) {
+                        withMaven(maven: 'maven-3.9.11') {
+                            sh """
+                                mvn clean -DskipTests verify sonar:sonar \
+                                -Dsonar.projectKey=portal \
+                                -Dsonar.host.url=$SONAR_HOST \
+                                -Dsonar.token=$SONAR_TOKEN
+                            """
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+def getDockerTag() {
+    def tag = sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
+    return tag
+}
